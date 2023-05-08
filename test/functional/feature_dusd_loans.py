@@ -560,7 +560,7 @@ class DUSDLoanTests(DefiTestFramework):
 
         # not sure why this is needed like this. but it works
         timesincestart= time.time() -start
-        self.update_oracle_price(timesincestart)
+        self.update_oracle_price(timesincestart+5000)
         #also fails with other crypto in
         self.nodes[0].deposittovault(vault_id, self.account0, "100.00000000@BTC")
         self.nodes[0].generate(1)
