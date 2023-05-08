@@ -558,7 +558,7 @@ class DUSDLoanTests(DefiTestFramework):
         self.nodes[0].generate(1)
 
         # not sure why this is needed like this. but it works
-        self.update_oracle_price(8000)
+        self.update_oracle_price(13000)
         #also fails with other crypto in
         self.nodes[0].deposittovault(vault_id, self.account0, "100.00000000@BTC")
         self.nodes[0].generate(1)
