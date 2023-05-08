@@ -527,6 +527,7 @@ class DUSDLoanTests(DefiTestFramework):
         self.rollback_checks([vault_id, vault_id_1])
 
     def check_looped_dusd(self):
+        start= time.time()
         block_height = self.nodes[0].getblockcount()
 
         vault_id = self.new_vault('LOAN1', ["100.00000000@DUSD"])
@@ -557,7 +558,9 @@ class DUSDLoanTests(DefiTestFramework):
         self.takeloan_withdraw(vault_id, "1.00000000@DUSD", 'withdraw')
         self.nodes[0].generate(1)
 
-        self.update_oracle_price(8000)
+        # not sure why this is needed like this. but it works
+        timesincestart= time.time() -start
+        self.update_oracle_price(timesincestart)
         #also fails with other crypto in
         self.nodes[0].deposittovault(vault_id, self.account0, "100.00000000@BTC")
         self.nodes[0].generate(1)
