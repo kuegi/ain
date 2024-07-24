@@ -1737,114 +1737,174 @@ static Res PoolSplits(CCustomCSView &view,
 
             ConsolidateRewards(view, pindex->nHeight, balancesToMigrate, false, nWorkers);
 
-            // Special case. No liquidity providers in a previously used pool.
-            if (balancesToMigrate.empty() && oldPoolPair->totalLiquidity == CPoolPair::MINIMUM_LIQUIDITY) {
+            bool isOptimizedSplitLogic = pindex->nHeight >= Params().GetConsensus().DF24Height;
+            CAmount oldTotalLiquidityInShares = 0;
+            CAmount newTotalLiquidityInShares = 0;
+            if (isOptimizedSplitLogic) {
+                if (oldPoolPair->totalLiquidity > CPoolPair::MINIMUM_LIQUIDITY) {
+                    oldTotalLiquidityInShares = oldPoolPair->totalLiquidity - CPoolPair::MINIMUM_LIQUIDITY;
+
+                    CAmount amountA{0}, amountB{0};
+                    if (oldPoolPair->idTokenA == oldTokenId) {
+                        amountA = CalculateNewAmount(multiplier, oldPoolPair->reserveA);
+                        totalBalance += amountA;
+                        amountB = oldPoolPair->reserveB;
+                    } else {
+                        amountB = CalculateNewAmount(multiplier, oldPoolPair->reserveB);
+                        totalBalance += amountB;
+                        amountA = oldPoolPair->reserveA;
+                    }
+                    newPoolPair.totalLiquidity = (arith_uint256(amountA) * amountB).sqrt().GetLow64();
+                    if (newPoolPair.totalLiquidity < CPoolPair::MINIMUM_LIQUIDITY) {
+                        throw std::runtime_error("totalLiquidity in new pool is less than minimum.");
+                    }
+                    newTotalLiquidityInShares = newPoolPair.totalLiquidity - CPoolPair::MINIMUM_LIQUIDITY;
+                    newPoolPair.reserveA = amountA;
+                    newPoolPair.reserveB = amountB;
+
+                } else {
+                    throw std::runtime_error("totalLiquidity in old pool is less than minimum.");
+                }
+
+                oldPoolPair->reserveA = 0;
+                oldPoolPair->reserveB = 0;
+                oldPoolPair->totalLiquidity = 0;
+            } else if (balancesToMigrate.empty() && oldPoolPair->totalLiquidity == CPoolPair::MINIMUM_LIQUIDITY) {
+                // Special case. No liquidity providers in a previously used pool.
                 balancesToMigrate.emplace_back(Params().GetConsensus().burnAddress,
                                                CAmount{CPoolPair::MINIMUM_LIQUIDITY});
             }
 
             for (auto &[owner, amount] : balancesToMigrate) {
-                if (owner != Params().GetConsensus().burnAddress) {
-                    CAccountsHistoryWriter subView(view,
+                CAmount liquidity{0};
+                if (isOptimizedSplitLogic) {
+                    CAccountsHistoryWriter transferView(view,
+                                                        pindex->nHeight,
+                                                        GetNextAccPosition(),
+                                                        pindex->GetBlockHash(),
+                                                        uint8_t(CustomTxType::TokenSplit));
+                    auto liquidity =
+                        MultiplyDivideAmounts(amount, newTotalLiquidityInShares, oldTotalLiquidityInShares);
+                    res = transferView.SubBalance(owner, CTokenAmount{oldPoolId, amount});
+                    if (!res.ok) {
+                        throw std::runtime_error(strprintf("SubBalance failed: %s", res.msg));
+                    }
+                    if (liquidity > 0) {
+                        res = transferView.AddBalance(owner, CTokenAmount{newPoolId, liquidity});
+                        if (!res.ok) {
+                            throw std::runtime_error(strprintf("AddBalance failed: %s", res.msg));
+                        }
+                    } else {
+                        LogPrintf("Pool migration results in 0 liquidity for %s, was %lld before\n",
+                                  ScriptToString(owner),
+                                  amount);
+                    }
+                    transferView.Flush();
+                } else {
+                    if (owner != Params().GetConsensus().burnAddress) {
+                        CAccountsHistoryWriter subView(view,
+                                                       pindex->nHeight,
+                                                       GetNextAccPosition(),
+                                                       pindex->GetBlockHash(),
+                                                       uint8_t(CustomTxType::TokenSplit));
+
+                        res = subView.SubBalance(owner, CTokenAmount{oldPoolId, amount});
+                        if (!res.ok) {
+                            throw std::runtime_error(strprintf("SubBalance failed: %s", res.msg));
+                        }
+                        subView.Flush();
+                    }
+
+                    if (oldPoolPair->totalLiquidity < CPoolPair::MINIMUM_LIQUIDITY) {
+                        throw std::runtime_error("totalLiquidity less than minimum.");
+                    }
+
+                    // First deposit to the pool has MINIMUM_LIQUIDITY removed and does not
+                    // belong to anyone. Give this to the last person leaving the pool.
+                    // Note: if optimized logic is not wanted (due to topics with 0 liq),
+                    // then lets add the minimum liq to the first who gets out of the pool
+                    // (cause its the first who gets into the new pool and therefore looses the MIN_LIQ again)
+                    if (oldPoolPair->totalLiquidity - amount == CPoolPair::MINIMUM_LIQUIDITY) {
+                        amount += CPoolPair::MINIMUM_LIQUIDITY;
+                    }
+
+                    CAmount resAmountA =
+                        (arith_uint256(amount) * oldPoolPair->reserveA / oldPoolPair->totalLiquidity).GetLow64();
+                    CAmount resAmountB =
+                        (arith_uint256(amount) * oldPoolPair->reserveB / oldPoolPair->totalLiquidity).GetLow64();
+                    oldPoolPair->reserveA -= resAmountA;
+                    oldPoolPair->reserveB -= resAmountB;
+                    oldPoolPair->totalLiquidity -= amount;
+
+                    CAmount amountA{0}, amountB{0};
+                    if (oldPoolPair->idTokenA == oldTokenId) {
+                        amountA = CalculateNewAmount(multiplier, resAmountA);
+                        totalBalance += amountA;
+                        amountB = resAmountB;
+                    } else {
+                        amountA = resAmountA;
+                        amountB = CalculateNewAmount(multiplier, resAmountB);
+                        totalBalance += amountB;
+                    }
+
+                    CAccountsHistoryWriter addView(view,
                                                    pindex->nHeight,
                                                    GetNextAccPosition(),
                                                    pindex->GetBlockHash(),
                                                    uint8_t(CustomTxType::TokenSplit));
 
-                    res = subView.SubBalance(owner, CTokenAmount{oldPoolId, amount});
-                    if (!res.ok) {
-                        throw std::runtime_error(strprintf("SubBalance failed: %s", res.msg));
-                    }
-                    subView.Flush();
-                }
+                    auto refundBalances = [&, owner = owner]() {
+                        addView.AddBalance(owner, {newPoolPair.idTokenA, amountA});
+                        addView.AddBalance(owner, {newPoolPair.idTokenB, amountB});
+                        addView.Flush();
+                    };
 
-                if (oldPoolPair->totalLiquidity < CPoolPair::MINIMUM_LIQUIDITY) {
-                    throw std::runtime_error("totalLiquidity less than minimum.");
-                }
-
-                // First deposit to the pool has MINIMUM_LIQUIDITY removed and does not
-                // belong to anyone. Give this to the last person leaving the pool.
-                if (oldPoolPair->totalLiquidity - amount == CPoolPair::MINIMUM_LIQUIDITY) {
-                    amount += CPoolPair::MINIMUM_LIQUIDITY;
-                }
-
-                CAmount resAmountA =
-                    (arith_uint256(amount) * oldPoolPair->reserveA / oldPoolPair->totalLiquidity).GetLow64();
-                CAmount resAmountB =
-                    (arith_uint256(amount) * oldPoolPair->reserveB / oldPoolPair->totalLiquidity).GetLow64();
-                oldPoolPair->reserveA -= resAmountA;
-                oldPoolPair->reserveB -= resAmountB;
-                oldPoolPair->totalLiquidity -= amount;
-
-                CAmount amountA{0}, amountB{0};
-                if (oldPoolPair->idTokenA == oldTokenId) {
-                    amountA = CalculateNewAmount(multiplier, resAmountA);
-                    totalBalance += amountA;
-                    amountB = resAmountB;
-                } else {
-                    amountA = resAmountA;
-                    amountB = CalculateNewAmount(multiplier, resAmountB);
-                    totalBalance += amountB;
-                }
-
-                CAccountsHistoryWriter addView(view,
-                                               pindex->nHeight,
-                                               GetNextAccPosition(),
-                                               pindex->GetBlockHash(),
-                                               uint8_t(CustomTxType::TokenSplit));
-
-                auto refundBalances = [&, owner = owner]() {
-                    addView.AddBalance(owner, {newPoolPair.idTokenA, amountA});
-                    addView.AddBalance(owner, {newPoolPair.idTokenB, amountB});
-                    addView.Flush();
-                };
-
-                if (amountA <= 0 || amountB <= 0 || owner == Params().GetConsensus().burnAddress) {
-                    refundBalances();
-                    continue;
-                }
-
-                CAmount liquidity{0};
-                if (newPoolPair.totalLiquidity == 0) {
-                    liquidity = (arith_uint256(amountA) * amountB).sqrt().GetLow64();
-                    liquidity -= CPoolPair::MINIMUM_LIQUIDITY;
-                    newPoolPair.totalLiquidity = CPoolPair::MINIMUM_LIQUIDITY;
-                } else {
-                    CAmount liqA =
-                        (arith_uint256(amountA) * newPoolPair.totalLiquidity / newPoolPair.reserveA).GetLow64();
-                    CAmount liqB =
-                        (arith_uint256(amountB) * newPoolPair.totalLiquidity / newPoolPair.reserveB).GetLow64();
-                    liquidity = std::min(liqA, liqB);
-
-                    if (liquidity == 0) {
+                    if (amountA <= 0 || amountB <= 0 || owner == Params().GetConsensus().burnAddress) {
                         refundBalances();
                         continue;
                     }
-                }
 
-                auto resTotal = SafeAdd(newPoolPair.totalLiquidity, liquidity);
-                if (!resTotal) {
-                    refundBalances();
-                    continue;
-                }
-                newPoolPair.totalLiquidity = resTotal;
+                    if (newPoolPair.totalLiquidity == 0) {
+                        liquidity = (arith_uint256(amountA) * amountB).sqrt().GetLow64();
+                        liquidity -= CPoolPair::MINIMUM_LIQUIDITY;
+                        newPoolPair.totalLiquidity = CPoolPair::MINIMUM_LIQUIDITY;
+                    } else {
+                        CAmount liqA =
+                            (arith_uint256(amountA) * newPoolPair.totalLiquidity / newPoolPair.reserveA).GetLow64();
+                        CAmount liqB =
+                            (arith_uint256(amountB) * newPoolPair.totalLiquidity / newPoolPair.reserveB).GetLow64();
+                        liquidity = std::min(liqA, liqB);
 
-                auto resA = SafeAdd(newPoolPair.reserveA, amountA);
-                auto resB = SafeAdd(newPoolPair.reserveB, amountB);
-                if (resA && resB) {
-                    newPoolPair.reserveA = resA;
-                    newPoolPair.reserveB = resB;
-                } else {
-                    refundBalances();
-                    continue;
-                }
+                        if (liquidity == 0) {
+                            refundBalances();
+                            continue;
+                        }
+                    }
 
-                res = addView.AddBalance(owner, {newPoolId, liquidity});
-                if (!res) {
-                    refundBalances();
-                    continue;
+                    auto resTotal = SafeAdd(newPoolPair.totalLiquidity, liquidity);
+                    if (!resTotal) {
+                        refundBalances();
+                        continue;
+                    }
+                    newPoolPair.totalLiquidity = resTotal;
+
+                    auto resA = SafeAdd(newPoolPair.reserveA, amountA);
+                    auto resB = SafeAdd(newPoolPair.reserveB, amountB);
+                    if (resA && resB) {
+                        newPoolPair.reserveA = resA;
+                        newPoolPair.reserveB = resB;
+                    } else {
+                        refundBalances();
+                        continue;
+                    }
+
+                    res = addView.AddBalance(owner, {newPoolId, liquidity});
+                    if (!res) {
+                        refundBalances();
+                        continue;
+                    }
+                    addView.Flush();
                 }
-                addView.Flush();
 
                 auto oldPoolLogStr = CTokenAmount{oldPoolId, amount}.ToString();
                 auto newPoolLogStr = CTokenAmount{newPoolId, liquidity}.ToString();
@@ -1853,7 +1913,6 @@ static Res PoolSplits(CCustomCSView &view,
                          ScriptToString(owner),
                          oldPoolLogStr,
                          newPoolLogStr);
-
                 view.SetShare(newPoolId, owner, pindex->nHeight);
             }
 
