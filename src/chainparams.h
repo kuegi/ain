@@ -80,7 +80,7 @@ public:
     /** Minimum free space (in GB) needed for data directory when pruned; Does not include prune target*/
     uint64_t AssumedChainStateSize() const { return m_assumed_chain_state_size; }
     /** Whether it is possible to mine blocks on demand (no retargeting) */
-    bool MineBlocksOnDemand() const { return consensus.pos.fNoRetargeting; }
+    bool MineBlocksOnDemand() const { return consensus.pos.fNoRetargeting || fMockNetwork; }
     /** Return the BIP70 network string (main, test or regtest) */
     std::string NetworkIDString() const { return strNetworkID; }
     /** Return the list of hostnames to look up for DNS seeds */
@@ -129,6 +129,7 @@ protected:
 const auto SMART_CONTRACT_DFIP_2201 = "DFIP2201";
 const auto SMART_CONTRACT_DFIP_2203 = "DFIP2203";
 const auto SMART_CONTRACT_DFIP2206F = "DFIP2206F";
+const auto SMART_CONTRACT_TOKENLOCK = "TokenLock";
 
 constexpr auto ETH_ADDR_PREFIX = "0x";
 constexpr auto ETH_ADDR_LENGTH_INC_PREFIX = 42;

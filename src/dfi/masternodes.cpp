@@ -784,7 +784,7 @@ CCustomCSView::CCustomCSView(CStorageKV &st)
     CheckPrefixes();
 }
 
-CCustomCSView::CCustomCSView(std::unique_ptr<CStorageLevelDB> &st, const MapKV &changed)
+CCustomCSView::CCustomCSView(std::unique_ptr<CStorageLevelDB> &st, MapKV &changed)
     : CStorageView(new CFlushableStorageKV(st, changed)) {
     CheckPrefixes();
 }
@@ -971,17 +971,29 @@ bool CCustomCSView::CalculateOwnerRewards(const CScript &owner, uint32_t targetH
             return true;  // no share or target height is before a pool share' one
         }
         auto onLiquidity = [&]() -> CAmount { return GetBalance(owner, poolId).nValue; };
-        auto beginHeight = std::max(*height, balanceHeight);
-        CalculatePoolRewards(
-            poolId, onLiquidity, beginHeight, targetHeight, [&](RewardType, CTokenAmount amount, uint32_t height) {
-                auto res = AddBalance(owner, amount);
-                if (!res) {
-                    LogPrintf("Pool rewards: can't update balance of %s: %s, height %ld\n",
-                              owner.GetHex(),
-                              res.msg,
-                              targetHeight);
-                }
-            });
+        const auto beginHeight = std::max(*height, balanceHeight);
+        auto onReward = [&](RewardType, const CTokenAmount &amount, const uint32_t height) {
+            if (auto res = AddBalance(owner, amount); !res) {
+                LogPrintf(
+                    "Pool rewards: can't update balance of %s: %s, height %ld\n", owner.GetHex(), res.msg, height);
+            }
+        };
+
+        if (beginHeight < Params().GetConsensus().DF24Height) {
+            // Calculate just up to the fork height
+            const auto targetNewHeight = targetHeight >= Params().GetConsensus().DF24Height
+                                             ? Params().GetConsensus().DF24Height - 1
+                                             : targetHeight;
+            CalculatePoolRewards(poolId, onLiquidity, beginHeight, targetNewHeight, onReward);
+        }
+
+        if (targetHeight >= Params().GetConsensus().DF24Height) {
+            // Calculate from the fork height
+            const auto beginNewHeight =
+                beginHeight < Params().GetConsensus().DF24Height ? Params().GetConsensus().DF24Height : beginHeight;
+            CalculateStaticPoolRewards(onLiquidity, onReward, poolId.v, beginNewHeight, targetHeight);
+        }
+
         return true;
     });
 
@@ -1202,6 +1214,7 @@ uint256 CCustomCSView::MerkleRoot() {
     return ComputeMerkleRoot(std::move(hashes));
 }
 
+// FIXME: this returns true if *any* of the tokenIds is locked. feels wrong.
 bool CCustomCSView::AreTokensLocked(const std::set<uint32_t> &tokenIds) const {
     const auto attributes = GetAttributes();
 
@@ -1400,12 +1413,4 @@ void CalcMissingRewardTempFix(CCustomCSView &mnview, const uint32_t targetHeight
             }
         }
     }
-}
-
-std::unique_ptr<CCustomCSView> GetViewSnapshot() {
-    // Get database snapshot and flushable storage changed map
-    auto [changed, snapshotDB] = pcustomcsview->GetStorage().GetSnapshotPair();
-
-    // Create new view using snapshot and change map
-    return std::make_unique<CCustomCSView>(snapshotDB, changed);
 }

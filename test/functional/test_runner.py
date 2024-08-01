@@ -119,6 +119,8 @@ BASE_SCRIPTS = [
     "p2p_feefilter.py",
     "feature_reindex.py",
     "feature_abortnode.py",
+    # TODO: check timing and position accordingly
+    "feature_restartdtokens.py",
     # vv Tests less than 30s vv
     "wallet_keypool_topup.py",
     "feature_stored_interest.py",
@@ -298,6 +300,7 @@ BASE_SCRIPTS = [
     "feature_loan_estimateloan.py",
     "feature_loan_priceupdate.py",
     "feature_loan_vaultstate.py",
+    "feature_static_pool_rewards.py",
     "feature_loan.py",
     "feature_evm_miner.py",
     "feature_evm.py",

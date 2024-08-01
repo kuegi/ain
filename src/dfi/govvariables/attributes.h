@@ -44,6 +44,7 @@ enum ParamIDs : uint8_t {
     Auction = 'i',
     Foundation = 'j',
     DFIP2211F = 'k',
+    dTokenRestart = 'l',
 };
 
 enum OracleIDs : uint8_t {
@@ -98,6 +99,8 @@ enum EconomyKeys : uint8_t {
     Loans = 'q',
     TransferDomainStatsLive = 'r',
     EVMBlockStatsLive = 's',
+    TokenLockRatio = 't',
+    LockedTokens = 'u',
 };
 
 enum DFIPKeys : uint8_t {
@@ -419,7 +422,7 @@ public:
     bool IsEmpty() const override;
     Res Import(const UniValue &val) override;
     UniValue Export() const override;
-    UniValue ExportFiltered(GovVarsFilter filter, const std::string &prefix) const;
+    UniValue ExportFiltered(GovVarsFilter filter, const std::string &prefix, CCustomCSView *view = nullptr) const;
     Res CheckKeys() const;
 
     Res Validate(const CCustomCSView &mnview) const override;
@@ -527,6 +530,7 @@ private:
     friend class CGovView;
     bool futureUpdated{};
     bool futureDUSDUpdated{};
+    bool dTokenRestartUpdated{};
     std::set<uint32_t> tokenSplits{};
     std::set<uint32_t> interestTokens{};
     std::set<CAttributeType> changed;
