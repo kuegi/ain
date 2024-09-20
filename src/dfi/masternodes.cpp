@@ -592,7 +592,7 @@ std::vector<int64_t> CMasternodesView::GetBlockTimes(const CKeyID &keyID,
         }
 
         // If no values set for pre-fork MN use the fork time
-        const uint8_t loops = timelock == CMasternode::TENYEAR ? 4 : timelock == CMasternode::FIVEYEAR ? 3 : 2;
+        const auto loops = GetTimelockLoops(timelock);
         for (uint8_t i{0}; i < loops; ++i) {
             if (!subNodesBlockTime[i]) {
                 subNodesBlockTime[i] = block->GetBlockTime();
@@ -784,7 +784,7 @@ CCustomCSView::CCustomCSView(CStorageKV &st)
     CheckPrefixes();
 }
 
-CCustomCSView::CCustomCSView(std::unique_ptr<CStorageLevelDB> &st, const MapKV &changed)
+CCustomCSView::CCustomCSView(std::unique_ptr<CStorageLevelDB> &st, MapKV &changed)
     : CStorageView(new CFlushableStorageKV(st, changed)) {
     CheckPrefixes();
 }
@@ -954,8 +954,11 @@ bool CCustomCSView::CanSpend(const uint256 &txId, int height) const {
         return state == CMasternode::RESIGNED;
     }
 
+    if (NewTokenCollateralExists(txId)) {
+        return false;
+    }
+
     // check if it was token collateral and token already destroyed
-    /// @todo token check for total supply/limit when implemented
     auto pair = GetTokenByCreationTx(txId);
     return !pair || pair->second.destructionTx != uint256{} || pair->second.IsPoolShare();
 }
@@ -971,17 +974,29 @@ bool CCustomCSView::CalculateOwnerRewards(const CScript &owner, uint32_t targetH
             return true;  // no share or target height is before a pool share' one
         }
         auto onLiquidity = [&]() -> CAmount { return GetBalance(owner, poolId).nValue; };
-        auto beginHeight = std::max(*height, balanceHeight);
-        CalculatePoolRewards(
-            poolId, onLiquidity, beginHeight, targetHeight, [&](RewardType, CTokenAmount amount, uint32_t height) {
-                auto res = AddBalance(owner, amount);
-                if (!res) {
-                    LogPrintf("Pool rewards: can't update balance of %s: %s, height %ld\n",
-                              owner.GetHex(),
-                              res.msg,
-                              targetHeight);
-                }
-            });
+        const auto beginHeight = std::max(*height, balanceHeight);
+        auto onReward = [&](RewardType, const CTokenAmount &amount, const uint32_t height) {
+            if (auto res = AddBalance(owner, amount); !res) {
+                LogPrintf(
+                    "Pool rewards: can't update balance of %s: %s, height %ld\n", owner.GetHex(), res.msg, height);
+            }
+        };
+
+        if (beginHeight < Params().GetConsensus().DF24Height) {
+            // Calculate just up to the fork height
+            const auto targetNewHeight =
+                targetHeight >= Params().GetConsensus().DF24Height ? Params().GetConsensus().DF24Height : targetHeight;
+            CalculatePoolRewards(poolId, onLiquidity, beginHeight, targetNewHeight, onReward);
+        }
+
+        if (targetHeight >= Params().GetConsensus().DF24Height) {
+            // Calculate from the fork height
+            const auto beginNewHeight = beginHeight < Params().GetConsensus().DF24Height
+                                            ? Params().GetConsensus().DF24Height - 1
+                                            : beginHeight - 1;
+            CalculateStaticPoolRewards(onLiquidity, onReward, poolId.v, beginNewHeight, targetHeight);
+        }
+
         return true;
     });
 
@@ -1400,12 +1415,4 @@ void CalcMissingRewardTempFix(CCustomCSView &mnview, const uint32_t targetHeight
             }
         }
     }
-}
-
-std::unique_ptr<CCustomCSView> GetViewSnapshot() {
-    // Get database snapshot and flushable storage changed map
-    auto [changed, snapshotDB] = pcustomcsview->GetStorage().GetSnapshotPair();
-
-    // Create new view using snapshot and change map
-    return std::make_unique<CCustomCSView>(snapshotDB, changed);
 }

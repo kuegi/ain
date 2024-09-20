@@ -143,6 +143,10 @@ public:
     friend bool operator!=(const CMasternode &a, const CMasternode &b);
 };
 
+inline uint8_t GetTimelockLoops(uint16_t timelock) {
+    return timelock == CMasternode::TENYEAR ? 4 : timelock == CMasternode::FIVEYEAR ? 3 : 2;
+}
+
 struct CCreateMasterNodeMessage {
     char operatorType;
     CKeyID operatorAuthAddress;
@@ -496,13 +500,14 @@ class CCustomCSView : public CMasternodesView,
             CTeamView               ::  AuthTeam, ConfirmTeam, CurrentTeam,
             CFoundationsDebtView    ::  Debt,
             CAnchorRewardsView      ::  BtcTx,
-            CTokensView             ::  ID, Symbol, CreationTx, LastDctId,
-            CAccountsView           ::  ByBalanceKey, ByHeightKey, ByFuturesSwapKey,
+            CTokensView             ::  ID, Symbol, CreationTx, LastDctId, TokenSplitMultiplier, NewTokenCollateralTXID, NewTokenCollateralID,
+            CAccountsView           ::  ByBalanceKey, ByHeightKey, ByFuturesSwapKey, ByFuturesDUSDKey,
             CCommunityBalancesView  ::  ById,
             CUndosView              ::  ByUndoKey,
             CPoolPairView           ::  ByID, ByPair, ByShare, ByIDPair, ByPoolSwap, ByReserves, ByRewardPct, ByRewardLoanPct,
                                         ByPoolReward, ByDailyReward, ByCustomReward, ByTotalLiquidity, ByDailyLoanReward,
-                                        ByPoolLoanReward, ByTokenDexFeePct,
+                                        ByPoolLoanReward, ByTokenDexFeePct, ByLoanTokenLiquidityPerBlock, ByLoanTokenLiquidityAverage,
+                                        ByTotalRewardPerShare, ByTotalLoanRewardPerShare, ByTotalCustomRewardPerShare, ByTotalCommissionPerShare,
             CGovView                ::  ByName, ByHeightVars,
             CAnchorConfirmsView     ::  BtcTx,
             COracleView             ::  ByName, FixedIntervalBlockKey, FixedIntervalPriceKey, PriceDeviation,
@@ -516,9 +521,9 @@ class CCustomCSView : public CMasternodesView,
                                         LoanSetLoanTokenKey, LoanSchemeKey, DefaultLoanSchemeKey, DelayedLoanSchemeKey,
                                         DestroyLoanSchemeKey, LoanInterestByVault, LoanTokenAmount, LoanLiquidationPenalty, LoanInterestV2ByVault,
                                         LoanInterestV3ByVault,
-            CVaultView              ::  VaultKey, OwnerVaultKey, CollateralKey, AuctionBatchKey, AuctionHeightKey, AuctionBidKey,
+            CVaultView              ::  VaultKey, OwnerVaultKey, CollateralKey, AuctionBatchKey, AuctionHeightKey, AuctionBidKey, HeightAndFeeKey,
             CSettingsView           ::  KVSettings,
-            CProposalView           ::  ByType, ByCycle, ByMnVote, ByStatus,
+            CProposalView           ::  ByType, ByCycle, ByMnVote, ByStatus, ByVoting,
             CVMDomainGraphView      ::  VMDomainBlockEdge, VMDomainTxEdge
         >();
     }
@@ -551,7 +556,7 @@ public:
     explicit CCustomCSView(CStorageKV &st);
 
     // Snapshot constructor
-    explicit CCustomCSView(std::unique_ptr<CStorageLevelDB> &st, const MapKV &changed);
+    explicit CCustomCSView(std::unique_ptr<CStorageLevelDB> &st, MapKV &changed);
 
     // Cache-upon-a-cache constructors
     CCustomCSView(CCustomCSView &other);
@@ -627,8 +632,6 @@ public:
 };
 
 std::map<CKeyID, CKey> AmISignerNow(int height, const CAnchorData::CTeam &team);
-
-std::unique_ptr<CCustomCSView> GetViewSnapshot();
 
 /** Global DB and view that holds enhanced chainstate data (should be protected by cs_main) */
 extern std::unique_ptr<CStorageLevelDB> pcustomcsDB;

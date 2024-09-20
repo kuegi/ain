@@ -1356,47 +1356,15 @@ static void ProcessGovEvents(const CBlockIndex *pindex,
                 auto newVar = std::dynamic_pointer_cast<ATTRIBUTES>(var);
                 assert(newVar);
 
-                CDataStructureV0 key{AttributeTypes::Param, ParamIDs::Foundation, DFIPKeys::Members};
-                auto memberRemoval = newVar->GetValue(key, std::set<std::string>{});
+                CDataStructureV0 foundationMembers{AttributeTypes::Param, ParamIDs::Foundation, DFIPKeys::Members};
+                CDataStructureV0 governanceMembers{AttributeTypes::Param, ParamIDs::GovernanceParam, DFIPKeys::Members};
 
-                if (!memberRemoval.empty()) {
-                    auto existingMembers = govVar->GetValue(key, std::set<CScript>{});
+                GovernanceMemberRemoval(*newVar, *govVar, foundationMembers, false);
+                GovernanceMemberRemoval(*newVar, *govVar, governanceMembers, false);
 
-                    for (auto &member : memberRemoval) {
-                        if (member.empty()) {
-                            continue;
-                        }
-
-                        if (member[0] == '-') {
-                            auto memberCopy{member};
-                            const auto dest = DecodeDestination(memberCopy.erase(0, 1));
-                            if (!IsValidDestination(dest)) {
-                                continue;
-                            }
-                            existingMembers.erase(GetScriptForDestination(dest));
-
-                        } else {
-                            const auto dest = DecodeDestination(member);
-                            if (!IsValidDestination(dest)) {
-                                continue;
-                            }
-                            existingMembers.insert(GetScriptForDestination(dest));
-                        }
-                    }
-
-                    govVar->SetValue(key, existingMembers);
-
-                    // Remove this key and apply any other changes
-                    newVar->EraseKey(key);
-                    if (govVar->Import(newVar->Export()) && govVar->Validate(govCache) &&
-                        govVar->Apply(govCache, pindex->nHeight) && govCache.SetVariable(*govVar)) {
-                        govCache.Flush();
-                    }
-                } else {
-                    if (govVar->Import(var->Export()) && govVar->Validate(govCache) &&
-                        govVar->Apply(govCache, pindex->nHeight) && govCache.SetVariable(*govVar)) {
-                        govCache.Flush();
-                    }
+                if (govVar->Import(newVar->Export()) && govVar->Validate(govCache) &&
+                    govVar->Apply(govCache, pindex->nHeight) && govCache.SetVariable(*govVar)) {
+                    govCache.Flush();
                 }
             } else if (var->Validate(govCache) && var->Apply(govCache, pindex->nHeight) && govCache.SetVariable(*var)) {
                 govCache.Flush();
@@ -1544,7 +1512,7 @@ size_t RewardConsolidationWorkersCount() {
 // in lower versions of gcc or across clang.
 void ConsolidateRewards(CCustomCSView &view,
                         int height,
-                        const std::vector<std::pair<CScript, CAmount>> &items,
+                        const std::unordered_set<CScript, CScriptHasher> &owners,
                         bool interruptOnShutdown,
                         int numWorkers) {
     int nWorkers = numWorkers < 1 ? RewardConsolidationWorkersCount() : numWorkers;
@@ -1554,7 +1522,7 @@ void ConsolidateRewards(CCustomCSView &view,
     std::atomic<uint64_t> tasksCompleted{0};
     std::atomic<uint64_t> reportedTs{0};
 
-    for (auto &[owner, amount] : items) {
+    for (auto &owner : owners) {
         // See https://github.com/DeFiCh/ain/pull/1291
         // https://github.com/DeFiCh/ain/pull/1291#issuecomment-1137638060
         // Technically not fully synchronized, but avoid races
@@ -1579,9 +1547,9 @@ void ConsolidateRewards(CCustomCSView &view,
                 const auto logTimeIntervalMillis = 3 * 1000;
                 if (GetTimeMillis() - reportedTs > logTimeIntervalMillis) {
                     LogPrintf("Reward consolidation: %.2f%% completed (%d/%d)\n",
-                              (itemsCompleted * 1.f / items.size()) * 100.0,
+                              (itemsCompleted * 1.f / owners.size()) * 100.0,
                               itemsCompleted,
-                              items.size());
+                              owners.size());
                     reportedTs.store(GetTimeMillis(), std::memory_order::memory_order_relaxed);
                 }
             });
@@ -1713,6 +1681,7 @@ static Res PoolSplits(CCustomCSView &view,
             }
 
             std::vector<std::pair<CScript, CAmount>> balancesToMigrate;
+            // only needed for ConsolidateRewards, but kept here to ensure same behaviour as old code
             uint64_t totalAccounts = 0;
             view.ForEachBalance([&, oldPoolId = oldPoolId](const CScript &owner, CTokenAmount balance) {
                 if (oldPoolId.v == balance.nTokenId.v && balance.nValue > 0) {
@@ -1722,12 +1691,6 @@ static Res PoolSplits(CCustomCSView &view,
                 return true;
             });
 
-            auto nWorkers = RewardConsolidationWorkersCount();
-            LogPrintf("Pool migration: Consolidating rewards (count: %d, total: %d, concurrency: %d)..\n",
-                      balancesToMigrate.size(),
-                      totalAccounts,
-                      nWorkers);
-
             // Largest first to make sure we are over MINIMUM_LIQUIDITY on first call to AddLiquidity
             std::sort(balancesToMigrate.begin(),
                       balancesToMigrate.end(),
@@ -1735,7 +1698,19 @@ static Res PoolSplits(CCustomCSView &view,
                           return a.second > b.second;
                       });
 
-            ConsolidateRewards(view, pindex->nHeight, balancesToMigrate, false, nWorkers);
+            {
+                // consolidate after sorting to keep existing behaviour/ordering, should be irrelevant, but safety sake.
+                std::unordered_set<CScript, CScriptHasher> ownersToConsolidate;
+                for (auto &[owner, _] : balancesToMigrate) {
+                    ownersToConsolidate.emplace(owner);
+                }
+                auto nWorkers = RewardConsolidationWorkersCount();
+                LogPrintf("Pool migration: Consolidating rewards (count: %d, total: %d, concurrency: %d)..\n",
+                          ownersToConsolidate.size(),
+                          totalAccounts,
+                          nWorkers);
+                ConsolidateRewards(view, pindex->nHeight, ownersToConsolidate, false, nWorkers);
+            }
 
             // Special case. No liquidity providers in a previously used pool.
             if (balancesToMigrate.empty() && oldPoolPair->totalLiquidity == CPoolPair::MINIMUM_LIQUIDITY) {
@@ -2753,7 +2728,7 @@ static void ProcessProposalEvents(const CBlockIndex *pindex, CCustomCSView &cach
             }
 
             if (activeMasternodes.empty()) {
-                cache.ForEachMasternode([&](uint256 const &mnId, CMasternode node) {
+                cache.ForEachMasternode([&](const uint256 &mnId, CMasternode node) {
                     if (node.IsActive(pindex->nHeight, cache) && node.mintedBlocks) {
                         activeMasternodes.insert(mnId);
                     }
@@ -2767,7 +2742,7 @@ static void ProcessProposalEvents(const CBlockIndex *pindex, CCustomCSView &cach
             uint32_t voteYes = 0, voteNeutral = 0;
             std::set<uint256> voters{};
             cache.ForEachProposalVote(
-                [&](CProposalId const &pId, uint8_t cycle, uint256 const &mnId, CProposalVoteType vote) {
+                [&](const CProposalId &pId, uint8_t cycle, const uint256 &mnId, CProposalVoteType vote) {
                     if (pId != propId || cycle != prop.cycle) {
                         return false;
                     }
@@ -2792,7 +2767,7 @@ static void ProcessProposalEvents(const CBlockIndex *pindex, CCustomCSView &cach
                 auto feeBack = prop.fee - prop.feeBurnAmount;
                 auto amountPerVoter = DivideAmounts(feeBack, voters.size() * COIN);
                 for (const auto mnId : voters) {
-                    auto const mn = cache.GetMasternode(mnId);
+                    const auto mn = cache.GetMasternode(mnId);
                     assert(mn);
 
                     CScript scriptPubKey;

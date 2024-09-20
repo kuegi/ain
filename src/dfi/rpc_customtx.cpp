@@ -71,6 +71,7 @@ class CCustomTxRpcVisitor {
         rpcInfo.pushKV("mintable", token.IsMintable());
         rpcInfo.pushKV("tradeable", token.IsTradeable());
         rpcInfo.pushKV("finalized", token.IsFinalized());
+        rpcInfo.pushKV("deprecated", token.IsDeprecated());
     }
 
     void customRewardsInfo(const CBalances &rewards) const {
@@ -163,7 +164,10 @@ public:
 
     void operator()(const CUpdateTokenPreAMKMessage &obj) const { rpcInfo.pushKV("isDAT", obj.isDAT); }
 
-    void operator()(const CUpdateTokenMessage &obj) const { tokenInfo(obj.token); }
+    void operator()(const CUpdateTokenMessage &obj) const {
+        tokenInfo(obj.token);
+        rpcInfo.pushKV("newCollateralAddress", obj.newCollateralAddress);
+    }
 
     void operator()(const CMintTokensMessage &obj) const {
         rpcInfo.pushKVs(tokenBalances(obj));
@@ -692,7 +696,7 @@ public:
     void operator()(const CCustomTxMessageNone &) const {}
 };
 
-Res RpcInfo(const CTransaction &tx, uint32_t height, CustomTxType &txType, UniValue &results) {
+Res RpcInfo(CCustomCSView &view, const CTransaction &tx, uint32_t height, CustomTxType &txType, UniValue &results) {
     std::vector<unsigned char> metadata;
     txType = GuessCustomTxType(tx, metadata);
     if (txType == CustomTxType::None) {
@@ -702,8 +706,7 @@ Res RpcInfo(const CTransaction &tx, uint32_t height, CustomTxType &txType, UniVa
     auto consensus = Params().GetConsensus();
     auto res = CustomMetadataParse(height, consensus, metadata, txMessage);
     if (res) {
-        CCustomCSView mnview(*pcustomcsview);
-        std::visit(CCustomTxRpcVisitor(tx, height, mnview, results), txMessage);
+        std::visit(CCustomTxRpcVisitor(tx, height, view, results), txMessage);
     }
     return res;
 }

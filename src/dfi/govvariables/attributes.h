@@ -44,6 +44,7 @@ enum ParamIDs : uint8_t {
     Auction = 'i',
     Foundation = 'j',
     DFIP2211F = 'k',
+    GovernanceParam = 'l',
 };
 
 enum OracleIDs : uint8_t {
@@ -124,6 +125,7 @@ enum DFIPKeys : uint8_t {
     TransferDomain = 'w',
     LiquidityCalcSamplingPeriod = 'x',
     AverageLiquidityPercentage = 'y',
+    CommunityGovernance = 'z',
 };
 
 enum GovernanceKeys : uint8_t {
@@ -400,6 +402,10 @@ void TrackDUSDSub(CCustomCSView &mnview, const CTokenAmount &amount);
 bool IsEVMEnabled(const std::shared_ptr<ATTRIBUTES> attributes);
 bool IsEVMEnabled(const CCustomCSView &view);
 Res StoreGovVars(const CGovernanceHeightMessage &obj, CCustomCSView &view);
+Res GovernanceMemberRemoval(ATTRIBUTES &newVar,
+                            ATTRIBUTES &prevVar,
+                            const CDataStructureV0 &memberKey,
+                            const bool canFail = true);
 
 enum GovVarsFilter {
     All,
@@ -419,7 +425,7 @@ public:
     bool IsEmpty() const override;
     Res Import(const UniValue &val) override;
     UniValue Export() const override;
-    UniValue ExportFiltered(GovVarsFilter filter, const std::string &prefix) const;
+    UniValue ExportFiltered(GovVarsFilter filter, const std::string &prefix, CCustomCSView *view = nullptr) const;
     Res CheckKeys() const;
 
     Res Validate(const CCustomCSView &mnview) const override;
@@ -477,6 +483,17 @@ public:
         return attributes.count(key) > 0;
     }
 
+    [[nodiscard]] bool CheckPartialKey(const uint8_t type, const uint8_t typeId) const {
+        for (const auto &[key, value] : attributes) {
+            if (auto attrV0 = std::get_if<CDataStructureV0>(&key)) {
+                if (attrV0->type == type && attrV0->typeId == typeId) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
     template <typename C, typename K>
     void ForEach(const C &callback, const K &key) const {
         static_assert(std::is_convertible_v<K, CAttributeType>);
@@ -522,6 +539,9 @@ public:
                                const uint32_t tokenID = std::numeric_limits<uint32_t>::max());
 
     void AddTokenSplit(const uint32_t tokenID) { tokenSplits.insert(tokenID); }
+    static Res ProcessVariable(const std::string &key,
+                               const std::optional<UniValue> &value,
+                               std::function<Res(const CAttributeType &, const CAttributeValue &)> applyVariable);
 
 private:
     friend class CGovView;
@@ -547,9 +567,6 @@ private:
     static const std::map<uint8_t, std::map<uint8_t, std::function<ResVal<CAttributeValue>(const std::string &)>>>
         &parseValue();
 
-    Res ProcessVariable(const std::string &key,
-                        const std::optional<UniValue> &value,
-                        std::function<Res(const CAttributeType &, const CAttributeValue &)> applyVariable);
     Res RefundFuturesDUSD(CCustomCSView &mnview, const uint32_t height);
 };
 
